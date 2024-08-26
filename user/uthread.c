@@ -10,12 +10,32 @@
 #define STACK_SIZE  8192
 #define MAX_THREAD  4
 
+// 用户线程的上下文结构体
+struct tcontext {
+  uint64 ra;
+  uint64 sp;
+
+  // callee-saved
+  uint64 s0;
+  uint64 s1;
+  uint64 s2;
+  uint64 s3;
+  uint64 s4;
+  uint64 s5;
+  uint64 s6;
+  uint64 s7;
+  uint64 s8;
+  uint64 s9;
+  uint64 s10;
+  uint64 s11;
+};
 
 struct thread {
-  char       stack[STACK_SIZE]; /* the thread's stack */
-  int        state;             /* FREE, RUNNING, RUNNABLE */
-
+  char            stack[STACK_SIZE];  /* the thread's stack */
+  int             state;              /* FREE, RUNNING, RUNNABLE */
+  struct tcontext context;            /* 用户进程上下文 */
 };
+
 struct thread all_thread[MAX_THREAD];
 struct thread *current_thread;
 extern void thread_switch(uint64, uint64);
@@ -32,18 +52,18 @@ thread_init(void)
   current_thread->state = RUNNING;
 }
 
-void 
+void
 thread_schedule(void)
 {
-  struct thread *t, *next_thread;
+  struct thread* t, * next_thread;
 
   /* Find another runnable thread. */
   next_thread = 0;
   t = current_thread + 1;
-  for(int i = 0; i < MAX_THREAD; i++){
-    if(t >= all_thread + MAX_THREAD)
+  for (int i = 0; i < MAX_THREAD; i++) {
+    if (t >= all_thread + MAX_THREAD)
       t = all_thread;
-    if(t->state == RUNNABLE) {
+    if (t->state == RUNNABLE) {
       next_thread = t;
       break;
     }
@@ -63,21 +83,28 @@ thread_schedule(void)
      * Invoke thread_switch to switch from t to next_thread:
      * thread_switch(??, ??);
      */
-  } else
+    thread_switch((uint64)&t->context, (uint64)&current_thread->context);
+  }
+  else
     next_thread = 0;
 }
 
-void 
+
+void
 thread_create(void (*func)())
 {
-  struct thread *t;
+  struct thread* t;
 
   for (t = all_thread; t < all_thread + MAX_THREAD; t++) {
     if (t->state == FREE) break;
   }
   t->state = RUNNABLE;
   // YOUR CODE HERE
+  t->context.ra = (uint64)func;                   // 设定函数返回地址
+  t->context.sp = (uint64)t->stack + STACK_SIZE;  // 设定栈指针
+
 }
+
 
 void 
 thread_yield(void)

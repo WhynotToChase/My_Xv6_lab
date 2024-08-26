@@ -308,32 +308,41 @@ uvmfree(pagetable_t pagetable, uint64 sz)
 int
 uvmcopy(pagetable_t old, pagetable_t new, uint64 sz)
 {
-  pte_t *pte;
+  pte_t* pte;
   uint64 pa, i;
   uint flags;
-  char *mem;
+  // char *mem;
 
-  for(i = 0; i < sz; i += PGSIZE){
-    if((pte = walk(old, i, 0)) == 0)
+  for (i = 0; i < sz; i += PGSIZE) {
+    if ((pte = walk(old, i, 0)) == 0)
       panic("uvmcopy: pte should exist");
-    if((*pte & PTE_V) == 0)
+    if ((*pte & PTE_V) == 0)
       panic("uvmcopy: page not present");
     pa = PTE2PA(*pte);
     flags = PTE_FLAGS(*pte);
-    if((mem = kalloc()) == 0)
-      goto err;
-    memmove(mem, (char*)pa, PGSIZE);
-    if(mappages(new, i, PGSIZE, (uint64)mem, flags) != 0){
-      kfree(mem);
+    // 清除PTE_W标志
+    flags &= (~PTE_W);
+    // 添加PTE_RSW标志
+    flags |= PTE_RSW;
+    // 清除父进程PTE的PTE_W标志
+    *pte &= (~PTE_W);
+    // 父进程PTE添加PTE_RSW标志
+    *pte |= PTE_RSW;
+    // 将父进程的物理内存映射到子进程的虚拟内存
+    if (mappages(new, i, PGSIZE, (uint64)pa, flags) != 0) {
+      // kfree((void*)pa);
       goto err;
     }
+    // 映射成功，父进程的物理内存引用计数增加
+    mem_count_up(pa);
   }
   return 0;
 
- err:
+err:
   uvmunmap(new, 0, i / PGSIZE, 1);
   return -1;
 }
+
 
 // mark a PTE invalid for user access.
 // used by exec for the user stack guard page.
@@ -352,19 +361,43 @@ uvmclear(pagetable_t pagetable, uint64 va)
 // Copy len bytes from src to virtual address dstva in a given page table.
 // Return 0 on success, -1 on error.
 int
-copyout(pagetable_t pagetable, uint64 dstva, char *src, uint64 len)
+copyout(pagetable_t pagetable, uint64 dstva, char* src, uint64 len)
 {
   uint64 n, va0, pa0;
 
-  while(len > 0){
+  pte_t* pte;
+  uint64 fault_pa;
+  // 检验页面错误是否来自cow,若不为0，则为cow,需要分配新的物理内存
+  if ((pte = cow_walk(pagetable, PGROUNDDOWN(dstva))) != 0) {
+    fault_pa = PTE2PA(*pte);
+    // 分配新的物理地址
+    char* child_pa = kalloc();
+    if (child_pa == 0) {
+      printf("copyout: alloc physical memory failed");
+      return -1;
+    }
+    // 将旧物理内存copy到新的物理内存
+    memmove(child_pa, (char*)fault_pa, PGSIZE);
+    // 子进程页表解除与原来父进程的物理内存映射
+    uvmunmap(pagetable, PGROUNDDOWN(dstva), 1, 0);
+    // 映射, 将出错的虚拟地址向下舍入到页面边界,因为va所在的这一页还没有对应的物理内存
+    if (mappages(pagetable, PGROUNDDOWN(dstva), PGSIZE, (uint64)child_pa, PTE_W | PTE_X | PTE_R | PTE_U) != 0) {
+      kfree(child_pa);
+      return -1;
+    }
+    // 内存计数减1，这里可能发生内存释放
+    kfree((void*)fault_pa);
+  }
+
+  while (len > 0) {
     va0 = PGROUNDDOWN(dstva);
     pa0 = walkaddr(pagetable, va0);
-    if(pa0 == 0)
+    if (pa0 == 0)
       return -1;
     n = PGSIZE - (dstva - va0);
-    if(n > len)
+    if (n > len)
       n = len;
-    memmove((void *)(pa0 + (dstva - va0)), src, n);
+    memmove((void*)(pa0 + (dstva - va0)), src, n);
 
     len -= n;
     src += n;
@@ -372,6 +405,7 @@ copyout(pagetable_t pagetable, uint64 dstva, char *src, uint64 len)
   }
   return 0;
 }
+
 
 // Copy from user to kernel.
 // Copy len bytes to dst from virtual address srcva in a given page table.
@@ -440,3 +474,27 @@ copyinstr(pagetable_t pagetable, char *dst, uint64 srcva, uint64 max)
     return -1;
   }
 }
+
+
+// 仿照walkaddr函数写一个函数用来检验虚拟地址是否是来自copy on write
+pte_t*
+cow_walk(pagetable_t pagetable, uint64 va)
+{
+  pte_t* pte;
+
+  if (va >= MAXVA)
+    return 0;
+
+  pte = walk(pagetable, va, 0);
+  if (pte == 0)
+    return 0;
+  if ((*pte & PTE_V) == 0)
+    return 0;
+  if ((*pte & PTE_U) == 0)
+    return 0;
+  // 检查是否来自cow的页面错误
+  if ((*pte & PTE_RSW) == 0)
+    return 0;
+  return pte;
+}
+

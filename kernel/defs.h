@@ -63,6 +63,12 @@ void            ramdiskrw(struct buf*);
 void*           kalloc(void);
 void            kfree(void *);
 void            kinit(void);
+int             get_mem_count(uint64 pa);
+void            mem_count_up(uint64 pa);
+int             mem_count_down(uint64 pa);
+void            mem_count_set_one(uint64 pa);
+pte_t*          cow_walk(pagetable_t, uint64);
+
 
 // log.c
 void            initlog(int, struct superblock*);

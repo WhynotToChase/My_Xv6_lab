@@ -65,11 +65,38 @@ argint(int n, int *ip)
 // Doesn't check for legality, since
 // copyin/copyout will do that.
 int
-argaddr(int n, uint64 *ip)
+argaddr(int n, uint64* ip)
 {
   *ip = argraw(n);
+  // 获取当前的进程
+  struct proc* p = myproc();
+  uint64 va = *ip;
+  // 检查传递进来的虚拟地址是否有效
+  if (walkaddr(p->pagetable, va) == 0) {
+
+    // 检查虚拟地址是否高于sbrk分配的虚拟地址或者低于栈顶指针
+    if (va < PGROUNDUP(p->trapframe->sp) || va >= p->sz) {
+      return -1;
+    }
+    // 申请1页物理内存
+    char* pa = kalloc();
+    if (pa == 0) { // 申请不成功
+      return -1;
+    }
+    // 初始化物理内存
+    memset(pa, 0, PGSIZE);
+    // 映射, 将虚拟地址向下舍入到页面边界,因为va所在的这一页还没有对应的物理内存
+    if (mappages(p->pagetable, PGROUNDDOWN(va), PGSIZE, (uint64)pa, PTE_W | PTE_X | PTE_R | PTE_U)) {
+      // 映射失败，释放物理内存
+      kfree(pa);
+      return -1;
+    }
+  }
   return 0;
 }
+
+
+
 
 // Fetch the nth word-sized system call argument as a null-terminated string.
 // Copies into buf, at most max.
